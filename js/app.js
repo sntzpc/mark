@@ -2,14 +2,20 @@
 // Frontend: Bootstrap 5 + IndexedDB (idb) + XLSX + jsPDF
 // Backend: Google Apps Script (see Code.gs)
 
-const GAS_URL_DEFAULT = "https://script.google.com/macros/s/AKfycbz25x3uRYzzACTp5pwPf4zCpx0Atf2ihqbN7G7IiTbaipkUyRf1-34bgAKvR6-CodfF/exec";
+// ======================
+// HARD CODE GAS URL ONLY
+// ======================
+const GAS_URL = "https://script.google.com/macros/s/AKfycbz25x3uRYzzACTp5pwPf4zCpx0Atf2ihqbN7G7IiTbaipkUyRf1-34bgAKvR6-CodfF/exec";
 
-function getGasUrl(){
-  const saved = (localStorage.getItem("GAS_URL") || "").trim();
-  return saved || GAS_URL_DEFAULT;
+// ======================
+// IDB: pakai UMD global (dari index.html) agar stabil di Chrome HP
+// (index.html sudah load: https://cdn.jsdelivr.net/npm/idb@8/build/umd.js)
+// ======================
+const { openDB } = window.idb;
+if (!openDB) {
+  throw new Error("Library idb (openDB) tidak ditemukan. Pastikan idb UMD sudah dimuat sebelum app.js.");
 }
 
-import { openDB } from "https://cdn.jsdelivr.net/npm/idb@8/+esm";
 
 const $ = (sel, root=document)=>root.querySelector(sel);
 const $$ = (sel, root=document)=>[...root.querySelectorAll(sel)];
@@ -193,24 +199,26 @@ async function migrateNilaiTanggalIfNeeded(){
 
 // ---------- IndexedDB ----------
 const dbPromise = openDB("karyamas_transkrip_db", 2, {
-  upgrade(db){
-    // Buat object store secara aman (untuk migrasi dari versi lama)
+  upgrade(db, oldVersion, newVersion, tx){
+    // ✅ Gunakan tx (versionchange transaction) yang diberikan oleh idb
+
     if(!db.objectStoreNames.contains("masters")){
       db.createObjectStore("masters", { keyPath:"key" });
     }
+
     if(!db.objectStoreNames.contains("nilai")){
       const nilai = db.createObjectStore("nilai", { keyPath:"id" });
       try { nilai.createIndex("by_tahun", "tahun"); } catch(e) {}
       try { nilai.createIndex("by_nik", "nik"); } catch(e) {}
       try { nilai.createIndex("by_jenis", "jenis_pelatihan"); } catch(e) {}
     }else{
-      // pastikan index ada
-      const tx = db.transaction("nilai", "versionchange");
+      // ✅ pastikan index ada (Chrome-safe)
       const store = tx.objectStore("nilai");
       if(!store.indexNames.contains("by_tahun")) { try{ store.createIndex("by_tahun","tahun"); }catch(e){} }
       if(!store.indexNames.contains("by_nik")) { try{ store.createIndex("by_nik","nik"); }catch(e){} }
       if(!store.indexNames.contains("by_jenis")) { try{ store.createIndex("by_jenis","jenis_pelatihan"); }catch(e){} }
     }
+
     if(!db.objectStoreNames.contains("users")){
       db.createObjectStore("users", { keyPath:"username" });
     }
@@ -222,6 +230,7 @@ const dbPromise = openDB("karyamas_transkrip_db", 2, {
     }
   }
 });
+
 
 async function dbGet(store, key){ return (await dbPromise).get(store, key); }
 async function dbPut(store, val){ return (await dbPromise).put(store, val); }
@@ -318,18 +327,79 @@ async function fixSessionMustChangeFromLocal(){
 
 // ---------- Crypto (SHA-256 hash) ----------
 async function sha256Hex(str){
-  const enc = new TextEncoder().encode(str);
-  const buf = await crypto.subtle.digest("SHA-256", enc);
-  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
+  // ✅ Jika secure context OK, pakai WebCrypto
+  if(globalThis.crypto && crypto.subtle && globalThis.isSecureContext){
+    const enc = new TextEncoder().encode(str);
+    const buf = await crypto.subtle.digest("SHA-256", enc);
+    return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
+  }
+
+  // ✅ Fallback JS SHA-256 (minimal, untuk kasus Chrome file:// / non-secure)
+  // Sumber algoritma: implementasi ringkas SHA-256 (tanpa dependency)
+  function rrot(n,x){ return (x>>>n) | (x<<(32-n)); }
+  function toHex(n){ return (n>>>0).toString(16).padStart(8,"0"); }
+
+  const msg = new TextEncoder().encode(str);
+  const l = msg.length * 8;
+
+  const with1 = new Uint8Array(((msg.length + 9 + 63) >> 6) << 6);
+  with1.set(msg, 0);
+  with1[msg.length] = 0x80;
+
+  const dv = new DataView(with1.buffer);
+  dv.setUint32(with1.length - 4, l >>> 0, false);
+  dv.setUint32(with1.length - 8, Math.floor(l / 2**32) >>> 0, false);
+
+  const K = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+  ];
+
+  let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+
+  const W = new Uint32Array(64);
+
+  for(let i=0;i<with1.length;i+=64){
+    for(let t=0;t<16;t++) W[t] = dv.getUint32(i + t*4, false);
+    for(let t=16;t<64;t++){
+      const s0 = rrot(7,W[t-15]) ^ rrot(18,W[t-15]) ^ (W[t-15]>>>3);
+      const s1 = rrot(17,W[t-2]) ^ rrot(19,W[t-2]) ^ (W[t-2]>>>10);
+      W[t] = (W[t-16] + s0 + W[t-7] + s1) >>> 0;
+    }
+
+    let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+
+    for(let t=0;t<64;t++){
+      const S1 = rrot(6,e) ^ rrot(11,e) ^ rrot(25,e);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + K[t] + W[t]) >>> 0;
+      const S0 = rrot(2,a) ^ rrot(13,a) ^ rrot(22,a);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) >>> 0;
+
+      h=g; g=f; f=e; e=(d + temp1)>>>0;
+      d=c; c=b; b=a; a=(temp1 + temp2)>>>0;
+    }
+
+    h0=(h0+a)>>>0; h1=(h1+b)>>>0; h2=(h2+c)>>>0; h3=(h3+d)>>>0;
+    h4=(h4+e)>>>0; h5=(h5+f)>>>0; h6=(h6+g)>>>0; h7=(h7+h)>>>0;
+  }
+
+  return (toHex(h0)+toHex(h1)+toHex(h2)+toHex(h3)+toHex(h4)+toHex(h5)+toHex(h6)+toHex(h7));
 }
 
+
 // ---------- GAS helpers ----------
-async function gasCall(action, payload={}){
-  const GAS_URL = getGasUrl();
-if(!GAS_URL || GAS_URL.includes("PASTE_YOUR_GAS_WEBAPP_URL")){
+async function gasCall(action, payload = {}) {
+  if (!GAS_URL || GAS_URL.includes("PASTE_YOUR_GAS_WEBAPP_URL")) {
     throw new Error("GAS_URL belum diisi. Isi hardcode di js/app.js.");
   }
-  // Gunakan JSONP (doGet) untuk menghindari masalah CORS pada WebApp GAS
   return await gasJsonp(action, payload);
 }
 
@@ -375,9 +445,7 @@ function gasJsonp(action, payload){
     // ✅ cache buster (Chrome mobile kadang agresif caching script)
     params.set("_ts", String(Date.now()));
 
-    const GAS_URL = getGasUrl();
     const url = GAS_URL + (GAS_URL.includes("?") ? "&" : "?") + params.toString();
-
 
     script = document.createElement("script");
     script.src = url;
@@ -385,7 +453,7 @@ function gasJsonp(action, payload){
 
     script.onerror = ()=>{
     cleanup();
-    reject(new Error("Gagal memuat GAS (JSONP). URL: " + getGasUrl() + " | Pastikan WebApp publik & URL deployment terbaru."));
+    reject(new Error("Gagal memuat GAS (JSONP). URL: " + GAS_URL + " | Pastikan WebApp publik & URL deployment terbaru."));
   };
 
 
@@ -2654,6 +2722,13 @@ async function pullPublicMasters(){
 
 // ---------- Boot ----------
 async function boot(){
+    // ✅ Chrome Android sering gagal untuk ESM+SW+IndexedDB jika dibuka dari file://
+  if(location.protocol === "file:"){
+    // tampilkan toast bila UI sudah siap (bootstrap toast ada)
+    try{ toast("Aplikasi dibuka dari file://. Di Chrome HP harus lewat https atau http://localhost (tidak bisa dari File Manager)."); }catch(e){}
+    console.warn("Running from file:// is not supported on Chrome Android for module+SW.");
+    // tetap lanjut, tapi user sudah dapat instruksi jelas
+  }
   // register SW
   if("serviceWorker" in navigator){
     try{ await navigator.serviceWorker.register("./sw.js"); }catch(e){ console.warn(e); }
