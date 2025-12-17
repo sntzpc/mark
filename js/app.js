@@ -783,6 +783,221 @@ function normNik(v){
 }
 
 // =====================
+// TRANSKRIP HELPERS (GLOBAL) - anti duplikat
+// =====================
+function r1(n){
+  const x = (typeof n==="number") ? n : parseFloat(n);
+  if(!Number.isFinite(x)) return "";
+  return (Math.round(x*10)/10).toFixed(1);
+}
+
+function fmtTanggalIndoLong(v){
+  // output: "17 Desember 2025"
+  const d = parseAnyDate(v);
+  if(!d) return "";
+  const bulan = [
+    "Januari","Februari","Maret","April","Mei","Juni",
+    "Juli","Agustus","September","Oktober","November","Desember"
+  ];
+  return `${String(d.getDate()).padStart(2,"0")} ${bulan[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+function pickPredikatFromMaster(v){
+  const n = (typeof v==="number") ? v : parseFloat(v);
+  if(!Number.isFinite(n)) return "-";
+
+  const rules = (state.masters.predikat||[])
+    .map(x=>({
+      nama: normStr(x.nama),
+      min: parseFloat(x.min),
+      max: parseFloat(x.max)
+    }))
+    .filter(x=>x.nama && Number.isFinite(x.min) && Number.isFinite(x.max));
+
+  if(rules.length){
+    const found = rules.find(r => n >= r.min && n <= r.max);
+    if(found) return found.nama;
+  }
+
+  // fallback default
+  if(n>90) return "Sangat Memuaskan";
+  if(n>80) return "Memuaskan";
+  if(n>=76) return "Baik";
+  if(n>=70) return "Kurang";
+  return "Sangat Kurang";
+}
+
+function getLulusStatus(total){
+  const n = (typeof total==="number") ? total : parseFloat(total);
+  if(!Number.isFinite(n)) return { lulus:false, label:"TIDAK LULUS", badge:"text-bg-danger" };
+  const ok = n >= 70;
+  return ok
+    ? { lulus:true, label:"LULUS", badge:"text-bg-success" }
+    : { lulus:false, label:"TIDAK LULUS", badge:"text-bg-danger" };
+}
+
+function jenisDenganTahun(jenis, tahun){
+  const j = normStr(jenis);
+  const y = String(normStr(tahun));
+  if(!j) return y ? `Tahun ${y}` : "-";
+  if(!y) return j;
+  if(/tahun\s+\d{4}/i.test(j)) return j;
+  return `${j} Tahun ${y}`;
+}
+
+function getKategoriMateri(materiKode, materiNama){
+  const kode = normStr(materiKode);
+  const nama = normStr(materiNama);
+  let m = null;
+
+  if(kode){
+    m = (state.masters.materi||[]).find(x => normStr(x.kode) === kode) || null;
+  }
+  if(!m && nama){
+    m = (state.masters.materi||[]).find(x => normStr(x.nama) === nama) || null;
+  }
+
+  let kat = normStr(m?.kategori);
+  if(!kat) return "";
+  const k = kat.toLowerCase();
+  if(k.includes("man")) return "Managerial";
+  if(k.includes("tek")) return "Teknis";
+  if(k.includes("sup")) return "Support";
+  if(k.includes("ojt")) return "OJT";
+  if(k.includes("pres")) return "Presentasi";
+  return kat;
+}
+
+function getBobotByJenis(jenis){
+  const j = normStr(jenis);
+  const b = (state.masters.bobot||[]).find(x => normStr(x.jenis_pelatihan) === j) || null;
+
+  let obj = {
+    managerial: parseFloat(b?.managerial) || 0,
+    teknis: parseFloat(b?.teknis) || 0,
+    support: parseFloat(b?.support) || 0,
+    ojt: parseFloat(b?.ojt) || 0,
+    presentasi: parseFloat(b?.presentasi) || 0
+  };
+
+  // SAFETY: normalisasi jika total tidak 100 tapi ada isinya
+  const sum = obj.managerial + obj.teknis + obj.support + obj.ojt + obj.presentasi;
+  if(sum > 0 && Math.abs(sum - 100) > 0.01){
+    const k = 100 / sum;
+    obj = {
+      managerial: obj.managerial * k,
+      teknis: obj.teknis * k,
+      support: obj.support * k,
+      ojt: obj.ojt * k,
+      presentasi: obj.presentasi * k
+    };
+  }
+  return obj;
+}
+
+function getBobotPercentForKategori(bobotObj, kategori){
+  const k = normStr(kategori).toLowerCase();
+  if(k === "managerial") return bobotObj.managerial;
+  if(k === "teknis") return bobotObj.teknis;
+  if(k === "support") return bobotObj.support;
+  if(k === "ojt") return bobotObj.ojt;
+  if(k === "presentasi") return bobotObj.presentasi;
+  return 0;
+}
+
+// base filter untuk transkrip: abaikan filter test (supaya PDF/preview selalu ambil Final)
+function filterBaseForTranscript(allNilai, f){
+  return (allNilai||[]).filter(r=>{
+    const rNik = normNik(r.nik);
+    const uNik = normNik(state.user?.username);
+
+    if(state.user.role !== "admin" && rNik !== uNik) return false;
+
+    if(f?.tahun && String(normStr(r.tahun)) !== String(normStr(f.tahun))) return false;
+    if(f?.jenis && normStr(r.jenis_pelatihan) !== normStr(f.jenis)) return false;
+
+    if(f?.materi){
+      const mk = materiKeyFromRow(r);
+      if(mk !== normStr(f.materi)) return false;
+    }
+
+    if(state.user.role === "admin" && f?.nik && rNik !== normNik(f.nik)) return false;
+
+    return true;
+  });
+}
+
+// hitung rerata kelas per materi dari Final rows
+function buildAvgMap(finalRows){
+  const avgMap = new Map(); // key -> {total,n}
+  for(const r of (finalRows||[])){
+    const jenis = normStr(r.jenis_pelatihan);
+    const tahun = String(normStr(r.tahun));
+    const mkey = materiKeyFromRow(r);
+    if(!jenis || !tahun || !mkey) continue;
+    const key = `${jenis}||${tahun}||${mkey}`;
+    if(!avgMap.has(key)) avgMap.set(key, { total:0, n:0 });
+
+    const v = (typeof r.nilai==="number") ? r.nilai : parseFloat(r.nilai);
+    if(Number.isFinite(v)){
+      const o = avgMap.get(key);
+      o.total += v;
+      o.n += 1;
+    }
+  }
+  return avgMap;
+}
+
+function getRerataKelasFromMap(avgMap, jenis, tahun, materiKey){
+  const key = `${normStr(jenis)}||${String(normStr(tahun))}||${normStr(materiKey)}`;
+  const o = avgMap.get(key);
+  if(!o || !o.n) return null;
+  return (o.total / o.n);
+}
+
+function buildTranscriptData({ nik, finalRowsAll }){
+  const mine = (finalRowsAll||[]).filter(r => normNik(r.nik) === normNik(nik));
+  if(!mine.length) return null;
+
+  const peserta = (state.masters.peserta||[]).find(p => String(p.nik) === String(nik)) || {};
+  const tahun = mine[0]?.tahun ?? peserta.tahun ?? state.filters.tahun ?? "";
+  const jenisRaw = mine[0]?.jenis_pelatihan || peserta.jenis_pelatihan || "-";
+  const jenisLabel = jenisDenganTahun(jenisRaw, tahun);
+
+  const avgMap = buildAvgMap(finalRowsAll);
+  const bobotObj = getBobotByJenis(jenisRaw);
+
+  const listSorted = mine.slice().sort((a,b)=>String(a.materi_kode||"").localeCompare(String(b.materi_kode||"")));
+
+  const lines = [];
+  let totalWeighted = 0;
+
+  for(const r of listSorted){
+    const mKey = materiKeyFromRow(r);
+    const rk = getRerataKelasFromMap(avgMap, jenisRaw, tahun, mKey);
+
+    const poin = (typeof r.nilai==="number") ? r.nilai : parseFloat(r.nilai);
+    const poinOk = Number.isFinite(poin) ? poin : 0;
+
+    const kategori = getKategoriMateri(r.materi_kode, r.materi_nama);
+    const bobotPct = getBobotPercentForKategori(bobotObj, kategori);
+
+    const nilaiWeighted = poinOk * (bobotPct / 100);
+    if(Number.isFinite(nilaiWeighted)) totalWeighted += nilaiWeighted;
+
+    lines.push({
+      materi_kode: r.materi_kode || "",
+      materi_nama: r.materi_nama || "",
+      rerata_kelas: rk,
+      poin: poinOk,
+      nilai: nilaiWeighted
+    });
+  }
+
+  return { nik, peserta, tahun, jenisRaw, jenisLabel, lines, totalWeighted };
+}
+
+// =====================
 // NORMALISASI TANGGAL & NILAI ROW
 // =====================
 function _pad2(n){ return String(n).padStart(2,"0"); }
@@ -1177,27 +1392,7 @@ async function renderNilaiList(){
   const f = state.filters;
 
   // ✅ base filter untuk transkrip (abaikan filter test)
-//    supaya preview/PDF tetap bisa ambil Final walau user sedang filter PreTest/PostTest
-function buildBaseFilteredForTranscript(){
-  return allNilai.filter(r=>{
-    const rNik = normNik(r.nik);
-    const uNik = normNik(state.user?.username);
-
-    if(state.user.role !== "admin" && rNik !== uNik) return false;
-
-    if(f.tahun && String(normStr(r.tahun)) !== String(normStr(f.tahun))) return false;
-    if(f.jenis && normStr(r.jenis_pelatihan) !== normStr(f.jenis)) return false;
-
-    if(f.materi){
-      const mk = materiKeyFromRow(r);
-      if(mk !== normStr(f.materi)) return false;
-    }
-
-    if(state.user.role === "admin" && f.nik && rNik !== normNik(f.nik)) return false;
-
-    return true;
-  });
-}
+  const buildBaseFilteredForTranscript = ()=> filterBaseForTranscript(allNilai, state.filters);
 
 
   let rows = allNilai.filter(r=>{
@@ -1360,161 +1555,6 @@ function buildBaseFilteredForTranscript(){
     document.body.appendChild(el.firstElementChild);
   }
 
-  function r1(n){
-    const x = (typeof n==="number") ? n : parseFloat(n);
-    if(!Number.isFinite(x)) return "";
-    return (Math.round(x*10)/10).toFixed(1);
-  }
-
-  function getKategoriMateri(materiKode, materiNama){
-    const kode = normStr(materiKode);
-    const nama = normStr(materiNama);
-    let m = null;
-    if(kode){
-      m = (state.masters.materi||[]).find(x => normStr(x.kode) === kode) || null;
-    }
-    if(!m && nama){
-      m = (state.masters.materi||[]).find(x => normStr(x.nama) === nama) || null;
-    }
-    let kat = normStr(m?.kategori);
-    if(!kat) return "";
-    const k = kat.toLowerCase();
-    if(k.includes("man")) return "Managerial";
-    if(k.includes("tek")) return "Teknis";
-    if(k.includes("sup")) return "Support";
-    if(k.includes("ojt")) return "OJT";
-    if(k.includes("pres")) return "Presentasi";
-    return kat;
-  }
-
-  function getBobotByJenis(jenis){
-  const j = normStr(jenis);
-  const b = (state.masters.bobot||[]).find(x => normStr(x.jenis_pelatihan) === j) || null;
-
-  let obj = {
-    managerial: parseFloat(b?.managerial) || 0,
-    teknis: parseFloat(b?.teknis) || 0,
-    support: parseFloat(b?.support) || 0,
-    ojt: parseFloat(b?.ojt) || 0,
-    presentasi: parseFloat(b?.presentasi) || 0
-  };
-
-  // ✅ SAFETY: normalisasi jika total tidak 100 tapi ada isinya
-  const sum = obj.managerial + obj.teknis + obj.support + obj.ojt + obj.presentasi;
-
-  if(sum > 0 && Math.abs(sum - 100) > 0.01){
-    const k = 100 / sum;
-    obj = {
-      managerial: obj.managerial * k,
-      teknis: obj.teknis * k,
-      support: obj.support * k,
-      ojt: obj.ojt * k,
-      presentasi: obj.presentasi * k
-    };
-  }
-
-  return obj;
-}
-
-
-  function getBobotPercentForKategori(bobotObj, kategori){
-    const k = normStr(kategori).toLowerCase();
-    if(k === "managerial") return bobotObj.managerial;
-    if(k === "teknis") return bobotObj.teknis;
-    if(k === "support") return bobotObj.support;
-    if(k === "ojt") return bobotObj.ojt;
-    if(k === "presentasi") return bobotObj.presentasi;
-    return 0;
-  }
-
-  function jenisDenganTahun(jenis, tahun){
-    const j = normStr(jenis);
-    const y = String(normStr(tahun));
-    if(!j) return y ? `Tahun ${y}` : "-";
-    if(!y) return j;
-    if(/tahun\s+\d{4}/i.test(j)) return j;
-    return `${j} Tahun ${y}`;
-  }
-
-  // hitung rerata kelas per materi dari Final rows yg sedang terfilter
-  function buildAvgMap(finalRows){
-    const avgMap = new Map(); // key -> {total,n}
-    for(const r of finalRows){
-      const jenis = normStr(r.jenis_pelatihan);
-      const tahun = String(normStr(r.tahun));
-      const mkey = materiKeyFromRow(r);
-      if(!jenis || !tahun || !mkey) continue;
-      const key = `${jenis}||${tahun}||${mkey}`;
-      if(!avgMap.has(key)) avgMap.set(key, { total:0, n:0 });
-
-      const v = (typeof r.nilai==="number") ? r.nilai : parseFloat(r.nilai);
-      if(Number.isFinite(v)){
-        const o = avgMap.get(key);
-        o.total += v;
-        o.n += 1;
-      }
-    }
-    return avgMap;
-  }
-
-  function getRerataKelasFromMap(avgMap, jenis, tahun, materiKey){
-    const key = `${normStr(jenis)}||${String(normStr(tahun))}||${normStr(materiKey)}`;
-    const o = avgMap.get(key);
-    if(!o || !o.n) return null;
-    return (o.total / o.n);
-  }
-
-  // bangun data transkrip untuk 1 peserta
-  function buildTranscriptData({ nik, finalRowsAll }){
-    const mine = finalRowsAll.filter(r => normNik(r.nik) === normNik(nik));
-    if(!mine.length) return null;
-
-    const peserta = (state.masters.peserta||[]).find(p => String(p.nik) === String(nik)) || {};
-    const tahun = mine[0]?.tahun ?? peserta.tahun ?? state.filters.tahun ?? "";
-    const jenisRaw = mine[0]?.jenis_pelatihan || peserta.jenis_pelatihan || "-";
-    const jenisLabel = jenisDenganTahun(jenisRaw, tahun);
-
-    const avgMap = buildAvgMap(finalRowsAll);
-    const bobotObj = getBobotByJenis(jenisRaw);
-
-    const listSorted = mine.slice().sort((a,b)=>String(a.materi_kode||"").localeCompare(String(b.materi_kode||"")));
-
-    const lines = [];
-    let totalWeighted = 0;
-
-    for(const r of listSorted){
-      const mKey = materiKeyFromRow(r);
-      const rk = getRerataKelasFromMap(avgMap, jenisRaw, tahun, mKey);
-
-      const poin = (typeof r.nilai==="number") ? r.nilai : parseFloat(r.nilai);
-      const poinOk = Number.isFinite(poin) ? poin : 0;
-
-      const kategori = getKategoriMateri(r.materi_kode, r.materi_nama);
-      const bobotPct = getBobotPercentForKategori(bobotObj, kategori);
-
-      const nilaiWeighted = poinOk * (bobotPct / 100);
-      if(Number.isFinite(nilaiWeighted)) totalWeighted += nilaiWeighted;
-
-      lines.push({
-        materi_kode: r.materi_kode || "",
-        materi_nama: r.materi_nama || "",
-        rerata_kelas: rk,
-        poin: poinOk,
-        nilai: nilaiWeighted
-      });
-    }
-
-    return {
-      nik,
-      peserta,
-      tahun,
-      jenisRaw,
-      jenisLabel,
-      lines,
-      totalWeighted
-    };
-  }
-
   $("#fTahun").value = String(state.filters.tahun);
   $("#fJenis").value = state.filters.jenis;
     if($("#fTest")) $("#fTest").value = state.filters.test;
@@ -1561,51 +1601,6 @@ function buildBaseFilteredForTranscript(){
     XLSX.utils.book_append_sheet(wb, ws, "nilai");
     XLSX.writeFile(wb, `nilai_${state.filters.tahun||"all"}.xlsx`);
   });
-
-  function fmtTanggalIndoLong(v){
-  // output: "17 Desember 2025"
-  const d = parseAnyDate(v); // pakai helper yang sudah kita buat sebelumnya
-  if(!d) return "";
-  const bulan = [
-    "Januari","Februari","Maret","April","Mei","Juni",
-    "Juli","Agustus","September","Oktober","November","Desember"
-  ];
-  return `${String(d.getDate()).padStart(2,"0")} ${bulan[d.getMonth()]} ${d.getFullYear()}`;
-}
-
-function pickPredikatFromMaster(v){
-  const n = (typeof v==="number") ? v : parseFloat(v);
-  if(!Number.isFinite(n)) return "-";
-
-  const rules = (state.masters.predikat||[])
-    .map(x=>({
-      nama: normStr(x.nama),
-      min: parseFloat(x.min),
-      max: parseFloat(x.max)
-    }))
-    .filter(x=>x.nama && Number.isFinite(x.min) && Number.isFinite(x.max));
-
-  if(rules.length){
-    const found = rules.find(r => n >= r.min && n <= r.max);
-    if(found) return found.nama;
-  }
-
-  // fallback default
-  if(n>90) return "Sangat Memuaskan";
-  if(n>80) return "Memuaskan";
-  if(n>=76) return "Baik";
-  if(n>=70) return "Kurang";
-  return "Sangat Kurang";
-}
-
-function getLulusStatus(total){
-  const n = (typeof total==="number") ? total : parseFloat(total);
-  if(!Number.isFinite(n)) return { lulus:false, label:"TIDAK", badge:"text-bg-danger" };
-  const ok = n >= 70;
-  return ok
-    ? { lulus:true, label:"LULUS", badge:"text-bg-success" }
-    : { lulus:false, label:"TIDAK", badge:"text-bg-danger" };
-}
 
 $("#btnPreviewTrx").addEventListener("click", ()=>{
   ensureTrxPreviewModal();
@@ -1771,173 +1766,39 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
   const trxDate = $("#trxDate").value;
   if(!rows.length) return toast("Tidak ada data untuk dibuat transkrip.");
 
-  // ==============================
-  // 1) Ambil data Final saja (source untuk transkrip)
-  // ==============================
-  const baseFiltered = buildBaseFilteredForTranscript();
+  // 1) Ambil data Final saja (source untuk transkrip) + abaikan filter test
+  const baseFiltered = filterBaseForTranscript(allNilai, state.filters);
   const finalRowsAll = baseFiltered.filter(r => normStr(r.test_type) === "Final");
   if(!finalRowsAll.length) return toast("Tidak ada data Final untuk dibuat transkrip.");
 
-  // ==============================
-  // 2) Helper: format 1 angka belakang koma
-  // ==============================
-  const r1 = (n)=>{
-    const x = (typeof n==="number") ? n : parseFloat(n);
-    if(!Number.isFinite(x)) return "";
-    return (Math.round(x * 10) / 10).toFixed(1);
-  };
-
-  // ==============================
-  // 3) Helper: Ambil kategori materi (Managerial/Teknis/Support/OJT/Presentasi)
-  // ==============================
-  function getKategoriMateri(materiKode, materiNama){
-    const kode = normStr(materiKode);
-    const nama = normStr(materiNama);
-
-    // cari by kode (prioritas), lalu by nama
-    let m = null;
-    if(kode){
-      m = (state.masters.materi||[]).find(x => normStr(x.kode) === kode) || null;
-    }
-    if(!m && nama){
-      m = (state.masters.materi||[]).find(x => normStr(x.nama) === nama) || null;
-    }
-
-    let kat = normStr(m?.kategori);
-    // normalisasi ejaan umum
-    // (di master Anda disarankan: Managerial/Teknis/Support/OJT/Presentasi)
-    if(!kat) return "";
-    const k = kat.toLowerCase();
-    if(k.includes("man")) return "Managerial";
-    if(k.includes("tek")) return "Teknis";
-    if(k.includes("sup")) return "Support";
-    if(k.includes("ojt")) return "OJT";
-    if(k.includes("pres")) return "Presentasi";
-    return kat;
-  }
-
-  // ==============================
-  // 4) Helper: bobot per jenis_pelatihan
-  // ==============================
-  function getBobotByJenis(jenis){
-    const j = normStr(jenis);
-    const b = (state.masters.bobot||[]).find(x => normStr(x.jenis_pelatihan) === j) || null;
-    // return object % (0-100)
-    return {
-      managerial: parseFloat(b?.managerial) || 0,
-      teknis: parseFloat(b?.teknis) || 0,
-      support: parseFloat(b?.support) || 0,
-      ojt: parseFloat(b?.ojt) || 0,
-      presentasi: parseFloat(b?.presentasi) || 0
-    };
-  }
-
-  function getBobotPercentForKategori(bobotObj, kategori){
-    const k = normStr(kategori).toLowerCase();
-    if(k === "managerial") return bobotObj.managerial;
-    if(k === "teknis") return bobotObj.teknis;
-    if(k === "support") return bobotObj.support;
-    if(k === "ojt") return bobotObj.ojt;
-    if(k === "presentasi") return bobotObj.presentasi;
-    return 0;
-  }
-
-  // ==============================
-  // 5) RERATA KELAS: hitung per (jenis_pelatihan + tahun + materiKey)
-  //    sumber: nilai Final semua peserta
-  // ==============================
-  const avgMap = new Map(); // key -> {total,n}
-  for(const r of finalRowsAll){
-    const jenis = normStr(r.jenis_pelatihan);
-    const tahun = String(normStr(r.tahun));
-    const mkey = materiKeyFromRow(r);
-    if(!jenis || !tahun || !mkey) continue;
-
-    const key = `${jenis}||${tahun}||${mkey}`;
-    if(!avgMap.has(key)) avgMap.set(key, { total:0, n:0 });
-
-    const v = (typeof r.nilai === "number") ? r.nilai : parseFloat(r.nilai);
-    if(Number.isFinite(v)){
-      const o = avgMap.get(key);
-      o.total += v;
-      o.n += 1;
-    }
-  }
-
-  function getRerataKelas(jenis, tahun, materiKey){
-    const key = `${normStr(jenis)}||${String(normStr(tahun))}||${normStr(materiKey)}`;
-    const o = avgMap.get(key);
-    if(!o || !o.n) return "";
-    return (o.total / o.n);
-  }
-
-  // ==============================
-  // 6) Predikat: pakai master_predikat jika ada, fallback ke rule lama
-  // ==============================
-  function pickPredikatFromMaster(v){
-    const n = (typeof v==="number") ? v : parseFloat(v);
-    if(!Number.isFinite(n)) return "-";
-
-    const rules = (state.masters.predikat||[])
-      .map(x=>({
-        nama: normStr(x.nama),
-        min: parseFloat(x.min),
-        max: parseFloat(x.max)
-      }))
-      .filter(x=>x.nama && Number.isFinite(x.min) && Number.isFinite(x.max));
-
-    if(rules.length){
-      const found = rules.find(r => n >= r.min && n <= r.max);
-      if(found) return found.nama;
-    }
-
-    // fallback default
-    if(n>90) return "Sangat Memuaskan";
-    if(n>80) return "Memuaskan";
-    if(n>=76) return "Baik";
-    if(n>=70) return "Kurang";
-    return "Sangat Kurang";
-  }
-
-  // ==============================
-  // 7) Label jenis pelatihan + tahun: ".... Tahun 2025"
-  // ==============================
-  function jenisDenganTahun(jenis, tahun){
-    const j = normStr(jenis);
-    const y = String(normStr(tahun));
-    if(!j) return y ? `Tahun ${y}` : "-";
-    if(!y) return j;
-    if(/tahun\s+\d{4}/i.test(j)) return j; // sudah ada "Tahun 2025"
-    return `${j} Tahun ${y}`;
-  }
-
-  // ==============================
-  // 8) Group by peserta (1 PDF berisi banyak transkrip)
-  // ==============================
+  // 2) Group by peserta
   const grouped = new Map();
   for(const r of finalRowsAll){
-    if(!grouped.has(r.nik)) grouped.set(r.nik, []);
-    grouped.get(r.nik).push(r);
+    const k = normNik(r.nik);
+    if(!k) continue;
+    if(!grouped.has(k)) grouped.set(k, []);
+    grouped.get(k).push(r);
   }
   if(!grouped.size) return toast("Tidak ada data Final untuk dibuat transkrip.");
+
+  // 3) Rerata map sekali untuk semua peserta
+  const avgMap = buildAvgMap(finalRowsAll);
 
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:"pt", format:"a4" });
 
-  let first=true;
+  let first = true;
   for(const [nik, list] of grouped){
     if(!first) doc.addPage();
-    first=false;
+    first = false;
 
-    // peserta master
     const peserta = (state.masters.peserta||[]).find(p=>String(p.nik)===String(nik)) || {};
 
-    // tentukan tahun & jenis batch (ambil dari list dulu, fallback ke master)
     const tahun = list[0]?.tahun ?? peserta.tahun ?? state.filters.tahun ?? "";
     const jenisRaw = list[0]?.jenis_pelatihan || peserta.jenis_pelatihan || "-";
     const jenisLabel = jenisDenganTahun(jenisRaw, tahun);
 
-    // header
+    // Header
     doc.setFont("helvetica","bold");
     doc.setFontSize(14);
     doc.text("KARYAMAS PLANTATION", 40, 40);
@@ -1951,32 +1812,22 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
     const left = 40;
     const right = 320;
 
-    // Data kiri
     doc.text(`Nama : ${peserta.nama || list[0]?.nama || ""}`, left, 120);
     doc.text(`NIK  : ${nik}`, left, 136);
 
-    // Tanggal Presentasi & Judul Makalah
     doc.text(`Tanggal Presentasi : ${fmtTanggalIndoLong(peserta.tanggal_presentasi || "")}`, left, 152);
     doc.text(`Judul Makalah      : ${normStr(peserta.judul_presentasi || "")}`, left, 168);
 
-    // Data kanan
     doc.text(`Lokasi OJT : ${normStr(peserta.lokasi_ojt || "")}`, right, 120);
     doc.text(`Unit       : ${normStr(peserta.unit || "")}`, right, 136);
     doc.text(`Region     : ${normStr(peserta.region || "")}`, right, 152);
 
-    // Jenis pelatihan (bold)
     doc.setFont("helvetica","bold");
     doc.text(`${jenisLabel}`, left, 192);
 
-    // ==============================
-    // 9) Susun tabel: Rerata Kelas, Poin (nilai asli), Nilai (poin*bobot)
-    // ==============================
+    // Tabel
     const bobotObj = getBobotByJenis(jenisRaw);
-
-    // urut materi
-    const listSorted = list
-      .slice()
-      .sort((a,b)=>String(a.materi_kode||"").localeCompare(String(b.materi_kode||"")));
+    const listSorted = list.slice().sort((a,b)=>String(a.materi_kode||"").localeCompare(String(b.materi_kode||"")));
 
     const rowsTbl = [];
     let totalNilaiWeighted = 0;
@@ -1985,18 +1836,14 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
       const r = listSorted[idx];
       const mKey = materiKeyFromRow(r);
 
-      // Rerata kelas per materi (Final, batch sama)
-      const rk = getRerataKelas(jenisRaw, tahun, mKey);
+      const rk = getRerataKelasFromMap(avgMap, jenisRaw, tahun, mKey);
 
-      // Poin = nilai asli final
       const poin = (typeof r.nilai === "number") ? r.nilai : parseFloat(r.nilai);
       const poinOk = Number.isFinite(poin) ? poin : 0;
 
-      // kategori & bobot
       const kategori = getKategoriMateri(r.materi_kode, r.materi_nama);
       const bobotPct = getBobotPercentForKategori(bobotObj, kategori);
 
-      // Nilai = poin * bobot%
       const nilaiWeighted = poinOk * (bobotPct / 100);
       totalNilaiWeighted += (Number.isFinite(nilaiWeighted) ? nilaiWeighted : 0);
 
@@ -2004,7 +1851,7 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
         String(idx+1),
         r.materi_kode || "",
         r.materi_nama || "",
-        r1(rk === "" ? NaN : rk),
+        rk==null ? "" : r1(rk),
         r1(poinOk),
         r1(nilaiWeighted)
       ]);
@@ -2021,9 +1868,6 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
 
     const y = doc.lastAutoTable.finalY + 18;
 
-    // ==============================
-    // 10) Total Nilai = SUM nilaiWeighted
-    // ==============================
     const total = totalNilaiWeighted;
     const pred = pickPredikatFromMaster(total);
 
@@ -2043,16 +1887,6 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
   doc.save(`transkrip_${state.filters.tahun||"all"}.pdf`);
 });
 
-
-  function average(arr){ return arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0; }
-  function pickPredikat(v){
-    // default rule from sample: Sangat Memuaskan >90; Memuaskan >80-90; Baik ≥76-80; Kurang ≥70-<76; Sangat Kurang <70
-    if(v>90) return "Sangat Memuaskan";
-    if(v>80) return "Memuaskan";
-    if(v>=76) return "Baik";
-    if(v>=70) return "Kurang";
-    return "Sangat Kurang";
-  }
 }
 
 // ---------- Input Nilai (Admin) ----------
