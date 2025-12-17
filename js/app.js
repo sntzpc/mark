@@ -2,15 +2,13 @@
 // Frontend: Bootstrap 5 + IndexedDB (idb) + XLSX + jsPDF
 // Backend: Google Apps Script (see Code.gs)
 
-// ======================
-// HARD CODE GAS URL ONLY
-// ======================
-const GAS_URL = "https://script.google.com/macros/s/AKfycbxA0ZVZYpGq4ePqFwHsFUGyOoVn0vwf4XyvdCtycPLxo05WI4bw0mURT10iMBnE1txm/exec";
+const GAS_URL_DEFAULT = "https://script.google.com/macros/s/AKfycbxA0ZVZYpGq4ePqFwHsFUGyOoVn0vwf4XyvdCtycPLxo05WI4bw0mURT10iMBnE1txm/exec";
 
-// ======================
-// IDB: pakai UMD global (dari index.html) agar stabil di Chrome HP
-// (index.html sudah load: https://cdn.jsdelivr.net/npm/idb@8/build/umd.js)
-// ======================
+function getGasUrl(){
+  const u = (localStorage.getItem("GAS_URL") || "").trim();
+  return u || GAS_URL_DEFAULT;
+}
+
 const { openDB } = window.idb;
 if (!openDB) {
   throw new Error("Library idb (openDB) tidak ditemukan. Pastikan idb UMD sudah dimuat sebelum app.js.");
@@ -168,6 +166,7 @@ function setNetBadge(){
   badge.textContent = online ? "Online" : "Offline";
   badge.classList.toggle("badge-online", online);
   badge.classList.toggle("badge-offline", !online);
+  badge.onclick = ()=>{try{toast("GAS: " + getGasUrl());}catch(e){}};
   if ($("#btnSync")) $("#btnSync").classList.toggle("d-none", !online || !state.user);
 }
 window.addEventListener("online", ()=>{ setNetBadge(); syncQueue().catch(()=>{}); });
@@ -397,18 +396,18 @@ async function sha256Hex(str){
 
 // ---------- GAS helpers ----------
 async function gasCall(action, payload = {}) {
-  if (!GAS_URL || /PASTE_YOUR_GAS_WEBAPP_URL/i.test(GAS_URL)) {
-    throw new Error("GAS_URL belum diisi. Isi hardcode di js/app.js.");
+  const url = getGasUrl();
+  if (!url || /PASTE_YOUR_GAS_WEBAPP_URL/i.test(url)) {
+    throw new Error("GAS_URL belum diisi. Isi di Setting Admin atau hardcode default.");
   }
-  return await gasJsonp(action, payload);
+  return await gasJsonp(url, action, payload);
 }
 
 async function gasPing(){
-  // butuh action "ping" di GAS, atau gunakan action yang pasti ada
   return await gasCall("ping", {});
 }
 
-function gasJsonp(action, payload){
+function gasJsonp(GAS_URL, action, payload){
   return new Promise((resolve, reject)=>{
     const cb = "cb_"+Date.now()+"_"+Math.random().toString(16).slice(2);
 
