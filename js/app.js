@@ -397,10 +397,15 @@ async function sha256Hex(str){
 
 // ---------- GAS helpers ----------
 async function gasCall(action, payload = {}) {
-  if (!GAS_URL || GAS_URL.includes("https://script.google.com/macros/s/AKfycbxA0ZVZYpGq4ePqFwHsFUGyOoVn0vwf4XyvdCtycPLxo05WI4bw0mURT10iMBnE1txm/exec")) {
+  if (!GAS_URL || /PASTE_YOUR_GAS_WEBAPP_URL/i.test(GAS_URL)) {
     throw new Error("GAS_URL belum diisi. Isi hardcode di js/app.js.");
   }
   return await gasJsonp(action, payload);
+}
+
+async function gasPing(){
+  // butuh action "ping" di GAS, atau gunakan action yang pasti ada
+  return await gasCall("ping", {});
 }
 
 function gasJsonp(action, payload){
@@ -2739,7 +2744,7 @@ async function boot(){
   if(navigator.onLine){
     try{
       await gasPing();
-      console.log("GAS ping OK:", getGasUrl());
+      console.log("GAS ping OK:", GAS_URL);
     }catch(e){
       console.warn("GAS ping failed:", e);
       toast("GAS tidak bisa diakses: " + e.message);
