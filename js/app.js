@@ -2,7 +2,12 @@
 // Frontend: Bootstrap 5 + IndexedDB (idb) + XLSX + jsPDF
 // Backend: Google Apps Script (see Code.gs)
 
-const GAS_URL = "https://script.google.com/macros/s/AKfycbz25x3uRYzzACTp5pwPf4zCpx0Atf2ihqbN7G7IiTbaipkUyRf1-34bgAKvR6-CodfF/exec"; // HARD-CODE: ganti dengan URL WebApp GAS Anda
+const GAS_URL_DEFAULT = "https://script.google.com/macros/s/AKfycbz25x3uRYzzACTp5pwPf4zCpx0Atf2ihqbN7G7IiTbaipkUyRf1-34bgAKvR6-CodfF/exec";
+
+function getGasUrl(){
+  const saved = (localStorage.getItem("GAS_URL") || "").trim();
+  return saved || GAS_URL_DEFAULT;
+}
 
 import { openDB } from "https://cdn.jsdelivr.net/npm/idb@8/+esm";
 
@@ -320,7 +325,8 @@ async function sha256Hex(str){
 
 // ---------- GAS helpers ----------
 async function gasCall(action, payload={}){
-  if(!GAS_URL || GAS_URL.includes("PASTE_YOUR_GAS_WEBAPP_URL")){
+  const GAS_URL = getGasUrl();
+if(!GAS_URL || GAS_URL.includes("PASTE_YOUR_GAS_WEBAPP_URL")){
     throw new Error("GAS_URL belum diisi. Isi hardcode di js/app.js.");
   }
   // Gunakan JSONP (doGet) untuk menghindari masalah CORS pada WebApp GAS
@@ -369,16 +375,19 @@ function gasJsonp(action, payload){
     // ✅ cache buster (Chrome mobile kadang agresif caching script)
     params.set("_ts", String(Date.now()));
 
+    const GAS_URL = getGasUrl();
     const url = GAS_URL + (GAS_URL.includes("?") ? "&" : "?") + params.toString();
+
 
     script = document.createElement("script");
     script.src = url;
     script.async = true;
 
     script.onerror = ()=>{
-      cleanup();
-      reject(new Error("Gagal memuat GAS (JSONP). Pastikan URL WebApp benar & akses publik."));
-    };
+    cleanup();
+    reject(new Error("Gagal memuat GAS (JSONP). URL: " + getGasUrl() + " | Pastikan WebApp publik & URL deployment terbaru."));
+  };
+
 
     document.body.appendChild(script);
   });
@@ -2651,6 +2660,17 @@ async function boot(){
   }
 
   setNetBadge();
+    // ✅ TEST GAS cepat saat online (agar di HP ketahuan masalahnya di awal)
+  if(navigator.onLine){
+    try{
+      await gasPing();
+      console.log("GAS ping OK:", getGasUrl());
+    }catch(e){
+      console.warn("GAS ping failed:", e);
+      toast("GAS tidak bisa diakses: " + e.message);
+    }
+  }
+
   await ensureDefaultUsers();
   await loadMastersFromDB();
   await syncUsersFromMasterPeserta();
@@ -2760,6 +2780,5 @@ async function boot(){
     return; // penting: stop boot di sini, tidak perlu tampil login lagi
   }
 }
-
 
 boot();
