@@ -1,4 +1,4 @@
-const CACHE_NAME = "karyamas-transkrip-v20";
+const CACHE_NAME = "karyamas-transkrip-v23";
 const ASSETS = [
   "./",
   "./index.html",

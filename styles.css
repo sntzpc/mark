@@ -15,3 +15,17 @@ body{ background: var(--bg); }
 .table thead th{ background:#0b3a6711; }
 .btn-primary{ background: var(--brand); border-color: var(--brand); }
 .btn-primary:hover{ filter: brightness(1.05); }
+
+/* =========================
+   TABLE: NO WRAP TEXT
+   ========================= */
+.table-nowrap th,
+.table-nowrap td{
+  white-space: nowrap;
+}
+
+/* Terapkan juga untuk semua tabel di dalam .table-responsive (aman untuk seluruh app) */
+.table-responsive .table th,
+.table-responsive .table td{
+  white-space: nowrap;
+}
