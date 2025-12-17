@@ -330,6 +330,10 @@ async function gasCall(action, payload={}){
 function gasJsonp(action, payload){
   return new Promise((resolve, reject)=>{
     const cb = "cb_"+Date.now()+"_"+Math.random().toString(16).slice(2);
+
+    let script = null;
+    let done = false;
+
     const timeout = setTimeout(()=>{
       cleanup();
       reject(new Error("JSONP timeout"));
@@ -342,26 +346,44 @@ function gasJsonp(action, payload){
     };
 
     function cleanup(){
+      if(done) return;
+      done = true;
+
       clearTimeout(timeout);
+
       try{ delete window[cb]; }catch(e){ window[cb]=undefined; }
-      script.remove();
+
+      try{
+        if(script && script.parentNode) script.parentNode.removeChild(script);
+      }catch(e){}
     }
 
     const params = new URLSearchParams();
     params.set("action", action);
-    params.set("payload", encodeURIComponent(JSON.stringify(payload||{})));
+
+    // ✅ FIX: jangan double-encode, biarkan URLSearchParams yang encode
+    params.set("payload", JSON.stringify(payload||{}));
+
     params.set("callback", cb);
 
+    // ✅ cache buster (Chrome mobile kadang agresif caching script)
+    params.set("_ts", String(Date.now()));
+
     const url = GAS_URL + (GAS_URL.includes("?") ? "&" : "?") + params.toString();
-    const script = document.createElement("script");
+
+    script = document.createElement("script");
     script.src = url;
+    script.async = true;
+
     script.onerror = ()=>{
       cleanup();
       reject(new Error("Gagal memuat GAS (JSONP). Pastikan URL WebApp benar & akses publik."));
     };
+
     document.body.appendChild(script);
   });
 }
+
 
 // ---------- Auth ----------
 async function ensureDefaultUsers(){
@@ -1285,16 +1307,34 @@ function buildBaseFilteredForTranscript(){
   }
 
   function getBobotByJenis(jenis){
-    const j = normStr(jenis);
-    const b = (state.masters.bobot||[]).find(x => normStr(x.jenis_pelatihan) === j) || null;
-    return {
-      managerial: parseFloat(b?.managerial) || 0,
-      teknis: parseFloat(b?.teknis) || 0,
-      support: parseFloat(b?.support) || 0,
-      ojt: parseFloat(b?.ojt) || 0,
-      presentasi: parseFloat(b?.presentasi) || 0
+  const j = normStr(jenis);
+  const b = (state.masters.bobot||[]).find(x => normStr(x.jenis_pelatihan) === j) || null;
+
+  let obj = {
+    managerial: parseFloat(b?.managerial) || 0,
+    teknis: parseFloat(b?.teknis) || 0,
+    support: parseFloat(b?.support) || 0,
+    ojt: parseFloat(b?.ojt) || 0,
+    presentasi: parseFloat(b?.presentasi) || 0
+  };
+
+  // ✅ SAFETY: normalisasi jika total tidak 100 tapi ada isinya
+  const sum = obj.managerial + obj.teknis + obj.support + obj.ojt + obj.presentasi;
+
+  if(sum > 0 && Math.abs(sum - 100) > 0.01){
+    const k = 100 / sum;
+    obj = {
+      managerial: obj.managerial * k,
+      teknis: obj.teknis * k,
+      support: obj.support * k,
+      ojt: obj.ojt * k,
+      presentasi: obj.presentasi * k
     };
   }
+
+  return obj;
+}
+
 
   function getBobotPercentForKategori(bobotObj, kategori){
     const k = normStr(kategori).toLowerCase();
@@ -1653,7 +1693,8 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
   // ==============================
   // 1) Ambil data Final saja (source untuk transkrip)
   // ==============================
-  const finalRowsAll = rows.filter(r => normStr(r.test_type) === "Final");
+  const baseFiltered = buildBaseFilteredForTranscript();
+  const finalRowsAll = baseFiltered.filter(r => normStr(r.test_type) === "Final");
   if(!finalRowsAll.length) return toast("Tidak ada data Final untuk dibuat transkrip.");
 
   // ==============================
