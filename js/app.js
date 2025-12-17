@@ -5,7 +5,7 @@
 // ======================
 // HARD CODE GAS URL ONLY
 // ======================
-const GAS_URL = "https://script.google.com/macros/s/AKfycbz25x3uRYzzACTp5pwPf4zCpx0Atf2ihqbN7G7IiTbaipkUyRf1-34bgAKvR6-CodfF/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbxA0ZVZYpGq4ePqFwHsFUGyOoVn0vwf4XyvdCtycPLxo05WI4bw0mURT10iMBnE1txm/exec";
 
 // ======================
 // IDB: pakai UMD global (dari index.html) agar stabil di Chrome HP
@@ -397,7 +397,7 @@ async function sha256Hex(str){
 
 // ---------- GAS helpers ----------
 async function gasCall(action, payload = {}) {
-  if (!GAS_URL || GAS_URL.includes("PASTE_YOUR_GAS_WEBAPP_URL")) {
+  if (!GAS_URL || GAS_URL.includes("https://script.google.com/macros/s/AKfycbxA0ZVZYpGq4ePqFwHsFUGyOoVn0vwf4XyvdCtycPLxo05WI4bw0mURT10iMBnE1txm/exec")) {
     throw new Error("GAS_URL belum diisi. Isi hardcode di js/app.js.");
   }
   return await gasJsonp(action, payload);

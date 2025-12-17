@@ -1,4 +1,4 @@
-const CACHE_NAME = "karyamas-transkrip-v26"; // naikkan versi agar update pasti jalan
+const CACHE_NAME = "karyamas-transkrip-v27"; // naikkan versi agar update pasti jalan
 const ASSETS = [
   "./",
   "./index.html",
