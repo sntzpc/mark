@@ -1,0 +1,20 @@
+{
+  "name": "Karyamas Transkrip Nilai",
+  "short_name": "TranskripNilai",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#F6F8FB",
+  "theme_color": "#0B3A67",
+  "icons": [
+    {
+      "src": "assets/logo_karyamas.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/logo_karyamas.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
