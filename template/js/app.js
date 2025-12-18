@@ -1163,21 +1163,19 @@ function buildTranscriptData({ nik, finalRowsAll }){
   const avgMap = buildAvgMap(finalRowsAll);
   const bobotObj = getBobotByJenis(jenisRaw.replace(/\s+tahun\s+\d{4}\s*$/i,"").trim());
 
-    const listSorted = mine.slice().sort(cmpMateriKodeTranskrip);
-
-  // ✅ HITUNG JUMLAH MATERI PER KATEGORI (untuk pembagian bobot per materi)
-  const catCount = {};
-  for(const rr of listSorted){
-    const kk = getKategoriMateri(rr.materi_kode, rr.materi_nama);
-    const kNorm = normStr(kk);
-    if(!kNorm) continue;
-    catCount[kNorm] = (catCount[kNorm] || 0) + 1;
-  }
+  const listSorted = mine.slice().sort((a,b)=>String(a.materi_kode||"").localeCompare(String(b.materi_kode||"")));
 
   const lines = [];
   let totalWeighted = 0;
 
-  dbg("trx.catCount", { nik, jenisRaw, tahun, catCount });
+  dbg("trx.header", {
+    nik,
+    jenisRaw,
+    tahun,
+    jenisLabel,
+    bobotObj,
+    rows: listSorted.length
+  });
 
   for(const r of listSorted){
     const mKey = materiKeyFromRow(r);
@@ -1189,14 +1187,7 @@ function buildTranscriptData({ nik, finalRowsAll }){
     const kategori = getKategoriMateri(r.materi_kode, r.materi_nama);
     const bobotPct = getBobotPercentForKategori(bobotObj, kategori);
 
-    // ✅ bobot per materi = bobot kategori / jumlah materi kategori
-    const nKat = catCount[normStr(kategori)] || 0;
-
-    // rumus: poin * bobotPct / nKat / 100
-    const nilaiWeighted = (nKat > 0 && bobotPct > 0)
-      ? (poinOk * bobotPct / nKat / 100)
-      : 0;
-
+    const nilaiWeighted = poinOk * (bobotPct / 100);
     if(Number.isFinite(nilaiWeighted)) totalWeighted += nilaiWeighted;
 
     lines.push({
@@ -1206,7 +1197,6 @@ function buildTranscriptData({ nik, finalRowsAll }){
       poin: poinOk,
       nilai: nilaiWeighted
     });
-
     dbg("trx.row", {
       nik,
       jenisRaw,
@@ -1216,11 +1206,11 @@ function buildTranscriptData({ nik, finalRowsAll }){
       kategori,
       poinOk,
       bobotPct,
-      nKat,
       nilaiWeighted
     });
-  }
+  
 
+  }
 
   return { nik, peserta, tahun, jenisRaw, jenisLabel, lines, totalWeighted };
       
@@ -1379,41 +1369,6 @@ function materiKeyFromRow(r){
   const k = normStr(r?.materi_kode) || normStr(r?.materi_nama);
   return k;
 }
-
-// =====================
-// SORTING MATERI: AG -> SU -> MD -> KL (rapi untuk transkrip)
-// =====================
-function materiPrefixRank(kode){
-  const k = normStr(kode).toUpperCase();
-
-  // urutan yang Anda minta
-  if(k.startsWith("AG")) return 1;
-  if(k.startsWith("SU")) return 2;
-  if(k.startsWith("MD")) return 3;
-  if(k.startsWith("KL")) return 4;
-
-  // lain-lain taruh paling akhir
-  return 99;
-}
-
-function cmpMateriKodeTranskrip(a, b){
-  const ak = normStr(a?.materi_kode).toUpperCase();
-  const bk = normStr(b?.materi_kode).toUpperCase();
-
-  const ra = materiPrefixRank(ak);
-  const rb = materiPrefixRank(bk);
-  if(ra !== rb) return ra - rb;
-
-  // jika prefix sama → urutkan berdasarkan kode (AG001, AG002, dst)
-  const c = ak.localeCompare(bk, "id", { numeric:true, sensitivity:"base" });
-  if(c !== 0) return c;
-
-  // fallback: nama materi
-  const an = normStr(a?.materi_nama);
-  const bn = normStr(b?.materi_nama);
-  return an.localeCompare(bn, "id", { numeric:true, sensitivity:"base" });
-}
-
 
 function optMateriFromNilai(nilaiRows){
   // ambil dari data nilai yang sudah ter-filter (lebih relevan)
@@ -1785,7 +1740,7 @@ async function renderNilaiList(){
 
             <div id="trxMeta" class="small"></div>
             <div class="mt-2" id="trxBadges"></div>
-            <div class="mt-2 d-none">
+            <div class="mt-2">
               <button class="btn btn-outline-secondary btn-sm" id="btnDbgToggle">
                 <i class="bi bi-bug"></i> Debug (CCTV)
               </button>
@@ -2125,19 +2080,10 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
 
     // Tabel
     const bobotObj = getBobotByJenis(jenisRaw);
-    const listSorted = list.slice().sort(cmpMateriKodeTranskrip);
+    const listSorted = list.slice().sort((a,b)=>String(a.materi_kode||"").localeCompare(String(b.materi_kode||"")));
 
-        const rowsTbl = [];
+    const rowsTbl = [];
     let totalNilaiWeighted = 0;
-
-    // ✅ HITUNG JUMLAH MATERI PER KATEGORI (per peserta)
-    const catCount = {};
-    for(const rr of listSorted){
-      const kk = getKategoriMateri(rr.materi_kode, rr.materi_nama);
-      const kNorm = normStr(kk);
-      if(!kNorm) continue;
-      catCount[kNorm] = (catCount[kNorm] || 0) + 1;
-    }
 
     for(let idx=0; idx<listSorted.length; idx++){
       const r = listSorted[idx];
@@ -2151,13 +2097,7 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
       const kategori = getKategoriMateri(r.materi_kode, r.materi_nama);
       const bobotPct = getBobotPercentForKategori(bobotObj, kategori);
 
-      const nKat = catCount[normStr(kategori)] || 0;
-
-      // ✅ rumus baru: poin * bobotPct / nKat / 100
-      const nilaiWeighted = (nKat > 0 && bobotPct > 0)
-        ? (poinOk * bobotPct / nKat / 100)
-        : 0;
-
+      const nilaiWeighted = poinOk * (bobotPct / 100);
       totalNilaiWeighted += (Number.isFinite(nilaiWeighted) ? nilaiWeighted : 0);
 
       rowsTbl.push([
@@ -2770,27 +2710,7 @@ async function renderSettingAdmin(){
   const _el_btnPullNilai = $("#btnPullNilai");
   if(_el_btnPullNilai) _el_btnPullNilai.addEventListener("click", async ()=>{
     runBusy(_el_btnPullNilai, async ()=>{
-      const tahun = $("#aTahun").value;
-      const jenis = $("#aJenis").value;
-
-      // ✅ AUTO PULL MASTER bila master masih kosong
-      const mastersEmpty =
-        !(state.masters.peserta?.length) &&
-        !(state.masters.materi?.length) &&
-        !(state.masters.bobot?.length) &&
-        !(state.masters.predikat?.length);
-
-      if(mastersEmpty){
-        progressStart(1, "Master kosong. Menarik master dulu…");
-        // pilih salah satu: public master / master spesifik tahun+jenis
-        // 1) kalau GAS Anda punya pull_public_master:
-        const mres = await gasCall("pull_public_master", {});
-        await applyMastersFromServer(mres.masters);
-        progressDone("Master siap.");
-      }
-
-      // ✅ tarik nilai
-      const res = await gasCall("pull_nilai", { tahun, jenis });
+      const res = await gasCall("pull_nilai", { tahun: $("#aTahun").value, jenis: $("#aJenis").value });
       const total = res.rows?.length || 0;
       progressStart(total, "Menarik nilai dari Google Sheet…");
 
@@ -2803,13 +2723,12 @@ async function renderSettingAdmin(){
           progressSet(n, total, `Menyimpan ke offline… (${n}/${total})`);
         }
       }
-
       await rebuildPelatihanCache();
+
       progressDone("Tarik nilai selesai.");
       toast(`Tarik nilai selesai: ${n} baris.`);
     }, { busyText:"Menarik…" }).catch(e=>toast(e.message));
   });
-
 
 
   const _el_btnReset = $("#btnReset");
