@@ -4,11 +4,11 @@
 console.warn("APP.JS LOADED ✅", new Date().toISOString());
 
 
-const GAS_URL_DEFAULT = "https://script.google.com/macros/s/AKfycbxA0ZVZYpGq4ePqFwHsFUGyOoVn0vwf4XyvdCtycPLxo05WI4bw0mURT10iMBnE1txm/exec";
+// ✅ GAS URL dikunci (hardcode) — tidak bisa diubah via setting/localStorage
+const GAS_URL = "https://script.google.com/macros/s/AKfycbxA0ZVZYpGq4ePqFwHsFUGyOoVn0vwf4XyvdCtycPLxo05WI4bw0mURT10iMBnE1txm/exec";
 
 function getGasUrl(){
-  const u = (localStorage.getItem("GAS_URL") || "").trim();
-  return u || GAS_URL_DEFAULT;
+  return GAS_URL;
 }
 
 const { openDB } = window.idb;
@@ -21,41 +21,25 @@ const $ = (sel, root=document)=>root.querySelector(sel);
 const $$ = (sel, root=document)=>[...root.querySelectorAll(sel)];
 
 // =====================
-// CCTV DEBUG (aktifkan: localStorage.DEBUG_TRX="1")
+// DEBUG REMOVED (CCTV cleaned)
+// semua call dbg(...) tetap aman (no-op)
 // =====================
-const DBG = {
-  on: (localStorage.getItem("DEBUG_TRX") === "1"),
-  logs: [],
-  max: 400
-};
+function dbgOn(){}
+function dbgOff(){}
+function dbg(){ /* no-op */ }
+function dbgLast(){ return []; }
 
-function dbgOn(){
-  DBG.on = true;
-  localStorage.setItem("DEBUG_TRX","1");
-  console.warn("[DBG] Transkrip Debug ON");
+// ✅ Tambahkan ini: agar pemanggilan renderDbgBox() tidak error
+function renderDbgBox(){
+  // Karena debug sudah dihapus, pastikan elemen debug tetap tersembunyi
+  const btn = document.querySelector("#btnDbgToggle");
+  const box = document.querySelector("#dbgBox");
+  if(btn) btn.classList.add("d-none");
+  if(box){
+    box.classList.add("d-none");
+    box.innerHTML = "";
+  }
 }
-function dbgOff(){
-  DBG.on = false;
-  localStorage.removeItem("DEBUG_TRX");
-  console.warn("[DBG] Transkrip Debug OFF");
-}
-function dbg(tag, data){
-  if(!DBG.on) return;
-  const item = { t: new Date().toISOString(), tag, data };
-  DBG.logs.push(item);
-  if(DBG.logs.length > DBG.max) DBG.logs.shift();
-  console.log(`%c[DBG] ${tag}`, "color:#0b5; font-weight:bold", data);
-}
-function dbgLast(n=60){
-  return DBG.logs.slice(Math.max(0, DBG.logs.length - n));
-}
-
-try{
-  window.dbgOn = dbgOn;
-  window.dbgOff = dbgOff;
-  window.dbg = dbg;
-  window.dbgLast = dbgLast;
-}catch(e){}
 
 
 // ---------- UI Busy (Spinner) + Progress ----------
@@ -206,7 +190,7 @@ function setNetBadge(){
   badge.textContent = online ? "Online" : "Offline";
   badge.classList.toggle("badge-online", online);
   badge.classList.toggle("badge-offline", !online);
-  badge.onclick = ()=>{try{toast("GAS: " + getGasUrl());}catch(e){}};
+  badge.onclick = null; // jangan tampilkan GAS URL
   if ($("#btnSync")) $("#btnSync").classList.toggle("d-none", !online || !state.user);
 }
 window.addEventListener("online", ()=>{ setNetBadge(); syncQueue().catch(()=>{}); });
@@ -284,6 +268,8 @@ async function loadMastersFromDB(){
   state.masters.pelatihan = map.pelatihan || [];
   state.masters.bobot = map.bobot || [];
   state.masters.predikat = map.predikat || [];
+
+  normalizeMastersPesertaInState();
 }
 
 async function saveMastersToDB(){
@@ -434,17 +420,63 @@ async function sha256Hex(str){
 }
 
 
-// ---------- GAS helpers ----------
+// ---------- GAS helpers (POST text/plain first, fallback JSONP) ----------
 async function gasCall(action, payload = {}) {
   const url = getGasUrl();
   if (!url || /PASTE_YOUR_GAS_WEBAPP_URL/i.test(url)) {
-    throw new Error("GAS_URL belum diisi. Isi di Setting Admin atau hardcode default.");
+  throw new Error("GAS WebApp URL belum valid (hardcode). Periksa konstanta GAS_URL di app.js.");
+}
+
+  // 1) Coba POST text/plain (lebih stabil di Chrome mobile)
+  try{
+    return await gasPostPlain(url, action, payload, { timeoutMs: 25000 });
+  }catch(e){
+    console.warn("gasPostPlain failed, fallback JSONP:", e);
   }
+
+  // 2) Fallback: JSONP (cara lama)
   return await gasJsonp(url, action, payload);
 }
 
-async function gasPing(){
-  return await gasCall("ping", {});
+// (Ping dihapus / tidak dipakai lagi)
+// async function gasPing(){ return await gasCall("ping", {}); }
+
+async function gasPostPlain(GAS_URL, action, payload, { timeoutMs = 25000 } = {}){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), timeoutMs);
+
+  try{
+    const res = await fetch(GAS_URL, {
+      method: "POST",
+      headers: {
+        // kunci di sini: text/plain (metode yang Anda bilang paling aman di mobile)
+        "Content-Type": "text/plain;charset=utf-8"
+      },
+      body: JSON.stringify({ action, payload: payload || {} }),
+      cache: "no-store",
+      signal: ctrl.signal
+    });
+
+    // kalau server balas non-200, tetap coba baca teks untuk error
+    const txt = await res.text();
+    let data = null;
+    try{ data = JSON.parse(txt || "{}"); }catch(_){}
+
+    if(!res.ok){
+      throw new Error(`HTTP ${res.status} ${res.statusText}` + (txt ? ` | ${txt.slice(0,200)}` : ""));
+    }
+    if(!data || data.ok === false){
+      throw new Error((data && data.error) || "GAS error");
+    }
+    return data;
+  }catch(err){
+    if(String(err?.name||"") === "AbortError"){
+      throw new Error("Request timeout");
+    }
+    throw err;
+  }finally{
+    clearTimeout(t);
+  }
 }
 
 function gasJsonp(GAS_URL, action, payload){
@@ -865,6 +897,8 @@ async function applyMastersFromServer(mastersIncoming, { rebuildCache=true, sync
   // pakai in-place agar state.masters tetap referensi yang sama
   mergeMastersInPlace(state.masters, merged);
 
+  normalizeMastersPesertaInState();
+
   await saveMastersToDB();
   if(rebuildCache) await rebuildPelatihanCache();
   if(syncUsers) await syncUsersFromMasterPeserta();
@@ -930,6 +964,77 @@ function normNik(v){
   let s = normStr(v).replace(/\s+/g,"");
   if(/^\d+(\.0+)?$/.test(s)) s = s.replace(/\.0+$/,"");
   return s;
+}
+
+// =====================
+// NORMALISASI MASTER PESERTA (agar meta transkrip terbaca walau header beda-beda)
+// =====================
+function _pickAny(obj, keys){
+  for(const k of keys){
+    if(obj && Object.prototype.hasOwnProperty.call(obj, k)){
+      const v = obj[k];
+      if(v != null && String(v).trim() !== "") return v;
+    }
+  }
+  return "";
+}
+
+function normalizePesertaMasterRow(raw){
+  const r = raw || {};
+
+  // buat akses key yang fleksibel (as-is)
+  const o = { ...r };
+
+  // fallback: coba juga versi lowercase + underscore (kalau GAS mengirim "Tanggal Presentasi")
+  // (kita tidak ubah semua key, cuma ambil nilai)
+  const tanggal_presentasi = _pickAny(o, [
+    "tanggal_presentasi","Tanggal Presentasi","tanggal presentasi","tgl_presentasi","Tgl Presentasi","tgl presentasi",
+    "tanggalPresentasi","TanggalPresentasi","Tanggal_Presentasi"
+  ]);
+
+  const judul_presentasi = _pickAny(o, [
+    "judul_presentasi","Judul Presentasi","judul presentasi",
+    "judul_makalah","Judul Makalah","judul makalah",
+    "judulPresentasi","JudulPresentasi","Judul_Presentasi",
+    "judulMakalah","JudulMakalah","Judul_Makalah"
+  ]);
+
+  const lokasi_ojt = _pickAny(o, [
+    "lokasi_ojt","Lokasi OJT","lokasi ojt",
+    "lokasi_praktek","Lokasi Praktek","lokasi praktek",
+    "lokasi","Lokasi"
+  ]);
+
+  const unit = _pickAny(o, [
+    "unit","Unit","unit_kerja","Unit Kerja","unit kerja","unitKerja","UnitKerja"
+  ]);
+
+  const region = _pickAny(o, [
+    "region","Region","wilayah","Wilayah"
+  ]);
+
+  // pastikan output konsisten
+  return {
+    ...o,
+    nik: normNik(o.nik),
+    nama: normStr(o.nama),
+    jenis_pelatihan: normStr(o.jenis_pelatihan),
+
+    lokasi_ojt: normStr(lokasi_ojt),
+    unit: normStr(unit),
+    region: normStr(region),
+
+    // penting: tanggal_presentasi biarkan RAW (bisa excel serial / Date / ISO string)
+    tanggal_presentasi: (tanggal_presentasi ?? ""),
+    judul_presentasi: normStr(judul_presentasi),
+
+    // (opsional) kalau ada field lain biarkan tetap
+  };
+}
+
+function normalizeMastersPesertaInState(){
+  if(!Array.isArray(state.masters.peserta)) state.masters.peserta = [];
+  state.masters.peserta = state.masters.peserta.map(normalizePesertaMasterRow);
 }
 
 
@@ -1017,7 +1122,8 @@ function getKategoriMateri(materiKode, materiNama){
 
     // fallback dari prefix kode (sesuaikan jika ada pola lain)
     if(/^MD/.test(k)) kat = "Managerial";
-    else if(/^AG/.test(k)) kat = "Teknis";
+    // ✅ UPDATE: Teknis untuk AG (AGRO) + MI (MILL) + AD (ADMN)
+    else if(/^(AG|MI|AD)/.test(k)) kat = "Teknis";
     else if(/^SU/.test(k)) kat = "Support";
     else if(/^KL/.test(k)){
       const nm = nama.toUpperCase();
@@ -1044,39 +1150,67 @@ function getKategoriMateri(materiKode, materiNama){
   return kat;
 }
 
+// =====================
+// BOBOT LOOKUP HELPER (lebih toleran untuk MILL/ADMN)
+// =====================
+function findBobotRowByJenis(jenisInput){
+  const src = (state.masters.bobot || []);
+  if(!src.length) return null;
 
-function getBobotByJenis(jenis){
-  const j0 = normStr(jenis);
+  const j0 = normStr(jenisInput);
   const jClean = normalizeJenisForBobot(j0);
 
   const k0 = normKey(j0);
   const k1 = normKey(jClean);
 
-  const b = (state.masters.bobot||[]).find(x => {
-    const kj0 = normKey(x.jenis_pelatihan);
-    const kj1 = normKey(normalizeJenisForBobot(x.jenis_pelatihan));
-    return kj0 === k0 || kj0 === k1 || kj1 === k0 || kj1 === k1;
-  }) || null;
-  dbg("getBobotByJenis.input", { jenis_in: j0, jenis_clean: jClean, k0, k1, bobot_master_len: (state.masters.bobot||[]).length });
-  dbg("getBobotByJenis.match", { found: !!b, row: b || null });
+  // 1) exact match (paling ketat)
+  let hit = src.find(x=>{
+    const a0 = normKey(x.jenis_pelatihan);
+    const a1 = normKey(normalizeJenisForBobot(x.jenis_pelatihan));
+    return a0===k0 || a0===k1 || a1===k0 || a1===k1;
+  });
+  if(hit) return hit;
 
+  // 2) fuzzy match: contains / substring (toleran "KLP1 MILL" vs "KLP1 MILL 04 Tahun 2022")
+  hit = src.find(x=>{
+    const a1 = normKey(normalizeJenisForBobot(x.jenis_pelatihan));
+    return (a1 && (a1.includes(k1) || k1.includes(a1)));
+  });
+  if(hit) return hit;
 
+  // 3) fuzzy match: contains versi raw (kadang angka "04" masih menempel)
+  hit = src.find(x=>{
+    const a0 = normKey(x.jenis_pelatihan);
+    return (a0 && (a0.includes(k0) || k0.includes(a0)));
+  });
+  return hit || null;
+}
+
+function getBobotByJenis(jenis){
+  const j0 = normStr(jenis);
+
+  // ✅ cari bobot dengan lookup yang lebih toleran
+  const b = findBobotRowByJenis(j0);
+
+  // parse angka (dukung koma/format ribuan)
   let obj = {
-    managerial: num(b?.managerial) || 0,
-    teknis:     num(b?.teknis) || 0,
-    support:    num(b?.support) || 0,
-    ojt:        num(b?.ojt) || 0,
-    presentasi: num(b?.presentasi) || 0
+    managerial: numVal(b?.managerial) || 0,
+    teknis:     numVal(b?.teknis) || 0,
+    support:    numVal(b?.support) || 0,
+    ojt:        numVal(b?.ojt) || 0,
+    presentasi: numVal(b?.presentasi) || 0
   };
-    dbg("getBobotByJenis.out", obj);
 
-  // ❗ Penting: untuk kebutuhan Anda, jangan dinormalisasi ke 100 kalau ada kategori kosong
-  // Jadi BLOK normalisasi sum->100 sebaiknya DIHAPUS / DIMATIKAN
-  // (kalau mau tetap ada opsi, bisa dibuat toggle)
+  // ✅ fallback bila master bobot belum ada / tidak ketemu
+  // (agar transkrip MILL & ADMN tidak 0 semua)
+  const sum = obj.managerial + obj.teknis + obj.support + obj.ojt + obj.presentasi;
+  if(sum <= 0){
+    // default aman (silakan ubah sesuai kebijakan TC)
+    obj = { managerial: 20, teknis: 60, support: 10, ojt: 5, presentasi: 5 };
+  }
 
   return obj;
 }
-
 
 function getBobotPercentForKategori(bobotObj, kategori){
   const k = normStr(kategori).toLowerCase();
@@ -1386,8 +1520,12 @@ function materiKeyFromRow(r){
 function materiPrefixRank(kode){
   const k = normStr(kode).toUpperCase();
 
-  // urutan yang Anda minta
-  if(k.startsWith("AG")) return 1;
+  // ✅ UPDATE: semua prefix Teknis diletakkan paling atas
+  if(k.startsWith("AG")) return 1; // AGRO teknis
+  if(k.startsWith("MI")) return 1; // MILL teknis
+  if(k.startsWith("AD")) return 1; // ADMN teknis
+
+  // urutan berikutnya
   if(k.startsWith("SU")) return 2;
   if(k.startsWith("MD")) return 3;
   if(k.startsWith("KL")) return 4;
@@ -1395,6 +1533,7 @@ function materiPrefixRank(kode){
   // lain-lain taruh paling akhir
   return 99;
 }
+
 
 function cmpMateriKodeTranskrip(a, b){
   const ak = normStr(a?.materi_kode).toUpperCase();
@@ -1908,24 +2047,6 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
   }).join("");
   let __lastTrxData = null;
 
-    const renderDbgBox = ()=>{
-    const box = $("#dbgBox");
-    if(!box) return;
-    const logs = dbgLast(80);
-    box.innerHTML = logs.map(x=>{
-      const txt = JSON.stringify(x.data, null, 0);
-      return `<div class="mb-1"><b>${x.tag}</b> <span class="text-muted">${x.t}</span><br><code>${txt}</code></div>`;
-    }).join("") || `<div class="text-muted">Debug kosong (aktifkan dengan dbgOn()).</div>`;
-  };
-
-  $("#btnDbgToggle").onclick = ()=>{
-    const box = $("#dbgBox");
-    if(!box) return;
-    box.classList.toggle("d-none");
-    renderDbgBox();
-  };
-
-
   // default pilih pertama
   if(!sel.value && nikOptions[0]) sel.value = nikOptions[0];
 
@@ -1990,7 +2111,7 @@ $("#btnPreviewTrx").addEventListener("click", ()=>{
     `;
 
     $("#trxFootNote").textContent = `Tanggal Transkrip: ${fmtTanggalIndoLong($("#trxDate2").value)}`;
-        renderDbgBox();
+    if (typeof renderDbgBox === "function") renderDbgBox();
 
   };
 
@@ -2757,15 +2878,8 @@ async function renderSettingAdmin(){
     </div>
   `);
 
-  $("#setGas").value = localStorage.getItem("GAS_URL") || "";
   $("#aTahun").value = String(state.filters.tahun);
   $("#aJenis").value = state.filters.jenis;
-
-  const _el_btnSaveGas = $("#btnSaveGas");
-  if(_el_btnSaveGas) _el_btnSaveGas.addEventListener("click", ()=>{
-    localStorage.setItem("GAS_URL", $("#setGas").value.trim());
-    toast("GAS_URL disimpan.");
-  });
 
   const _el_btnPullNilai = $("#btnPullNilai");
   if(_el_btnPullNilai) _el_btnPullNilai.addEventListener("click", async ()=>{
@@ -2983,22 +3097,13 @@ async function boot(){
     console.warn("Running from file:// is not supported on Chrome Android for module+SW.");
     // tetap lanjut, tapi user sudah dapat instruksi jelas
   }
+  try{ localStorage.removeItem("GAS_URL"); }catch(e){}
   // register SW
   if("serviceWorker" in navigator){
     try{ await navigator.serviceWorker.register("./sw.js"); }catch(e){ console.warn(e); }
   }
 
   setNetBadge();
-    // ✅ TEST GAS cepat saat online (agar di HP ketahuan masalahnya di awal)
-  if(navigator.onLine){
-    try{
-      await gasPing();
-      console.log("GAS ping OK:", getGasUrl());
-    }catch(e){
-      console.warn("GAS ping failed:", e);
-      toast("GAS tidak bisa diakses: " + e.message);
-    }
-  }
 
   await ensureDefaultUsers();
   await loadMastersFromDB();
