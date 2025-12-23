@@ -1,6 +1,6 @@
 /* sw.js — Karyamas Transkrip Nilai (Chrome Mobile friendly) */
 
-const CACHE_VERSION = "v51"; // naikkan jika ada perubahan aset
+const CACHE_VERSION = "v52"; // naikkan jika ada perubahan aset
 const CACHE_NAME = `karyamas-transkrip-${CACHE_VERSION}`;
 
 // Pakai path absolut (lebih konsisten daripada "./")

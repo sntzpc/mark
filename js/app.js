@@ -183,6 +183,126 @@ function toast(msg){
   t.show();
 }
 
+// ===============================
+// MODAL DATA TABLE (reuse) + XLSX
+// ===============================
+let __dataModalState = {
+  title: "",
+  filename: "export.xlsx",
+  rows: [],
+  columns: [] // [{key,label}]
+};
+
+function ensureDataTableModal(){
+  if(document.getElementById("modalDataTable")) return;
+
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `
+  <div class="modal fade" id="modalDataTable" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="dtmTitle">Data</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+
+        <div class="modal-body">
+          <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+            <div class="small text-muted" id="dtmMeta">—</div>
+            <div class="ms-auto d-flex gap-2">
+              <button class="btn btn-outline-success btn-sm" id="dtmExport">
+                <i class="bi bi-file-earmark-spreadsheet"></i> Export XLSX
+              </button>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle table-nowrap">
+              <thead class="table-light">
+                <tr id="dtmHead"></tr>
+              </thead>
+              <tbody id="dtmBody"></tbody>
+            </table>
+          </div>
+
+          <div class="small text-muted">Total baris: <span id="dtmCount">0</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  `;
+  document.body.appendChild(wrap.firstElementChild);
+
+  // bind export sekali
+  document.getElementById("dtmExport").addEventListener("click", ()=>{
+    const cols = __dataModalState.columns || [];
+    const rows = __dataModalState.rows || [];
+    if(!rows.length) return toast("Tidak ada data untuk diexport.");
+
+    // export sebagai json dengan urutan kolom sesuai columns
+    const data = rows.map(r=>{
+      const o = {};
+      for(const c of cols){
+        o[c.label] = (r && Object.prototype.hasOwnProperty.call(r, c.key)) ? r[c.key] : "";
+      }
+      return o;
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "data");
+    XLSX.writeFile(wb, __dataModalState.filename || "export.xlsx");
+  });
+}
+
+function showDataTableModal({ title, meta, filename, columns, rows }){
+  ensureDataTableModal();
+
+  __dataModalState = {
+    title: title || "Data",
+    filename: filename || "export.xlsx",
+    rows: Array.isArray(rows) ? rows : [],
+    columns: Array.isArray(columns) ? columns : []
+  };
+
+  document.getElementById("dtmTitle").textContent = __dataModalState.title;
+  document.getElementById("dtmMeta").textContent = meta || "—";
+  document.getElementById("dtmCount").textContent = String(__dataModalState.rows.length);
+
+  // head
+  const head = document.getElementById("dtmHead");
+  head.innerHTML = "";
+  for(const c of __dataModalState.columns){
+    const th = document.createElement("th");
+    th.textContent = c.label;
+    head.appendChild(th);
+  }
+
+  // body
+  const body = document.getElementById("dtmBody");
+  body.innerHTML = "";
+  for(const r of __dataModalState.rows){
+    const tr = document.createElement("tr");
+    tr.innerHTML = __dataModalState.columns.map(c=>{
+      const v = (r && Object.prototype.hasOwnProperty.call(r, c.key)) ? r[c.key] : "";
+      return `<td>${escapeHtml(String(v ?? ""))}</td>`;
+    }).join("");
+    body.appendChild(tr);
+  }
+
+  const m = new bootstrap.Modal(document.getElementById("modalDataTable"));
+  m.show();
+}
+
+function escapeHtml(s){
+  return String(s)
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+
 function setNetBadge(){
   const online = navigator.onLine;
   const badge = $("#netBadge");
@@ -221,7 +341,7 @@ async function migrateNilaiTanggalIfNeeded(){
 }
 
 // ---------- IndexedDB ----------
-const dbPromise = openDB("karyamas_transkrip_db", 2, {
+const dbPromise = openDB("karyamas_transkrip_db", 3, {
   upgrade(db, oldVersion, newVersion, tx){
     // ✅ Gunakan tx (versionchange transaction) yang diberikan oleh idb
 
@@ -248,6 +368,9 @@ const dbPromise = openDB("karyamas_transkrip_db", 2, {
     if(!db.objectStoreNames.contains("queue")){
       db.createObjectStore("queue", { keyPath:"qid" });
     }
+    if(!db.objectStoreNames.contains("failed")){
+      db.createObjectStore("failed", { keyPath:"fid" });
+    }
     if(!db.objectStoreNames.contains("settings")){
       db.createObjectStore("settings", { keyPath:"key" });
     }
@@ -259,6 +382,7 @@ async function dbGet(store, key){ return (await dbPromise).get(store, key); }
 async function dbPut(store, val){ return (await dbPromise).put(store, val); }
 async function dbDel(store, key){ return (await dbPromise).delete(store, key); }
 async function dbAll(store){ return (await dbPromise).getAll(store); }
+async function dbClear(store){ return (await dbPromise).clear(store); }
 
 async function loadMastersFromDB(){
   const rows = await dbAll("masters");
@@ -731,6 +855,7 @@ async function refreshQueueBadge(){
 
 async function syncQueue(){
   if(!navigator.onLine) return;
+
   const db = await dbPromise;
   const items = await db.getAll("queue");
   if(!items.length) return;
@@ -740,27 +865,48 @@ async function syncQueue(){
   progressStart(total, "Sinkronisasi antrian…");
 
   let done = 0;
+  let failed = 0;
+
   for(const it of items){
     try{
       await gasCall(it.type, it.payload);
+
+      // sukses → hapus dari queue
       await db.delete("queue", it.qid);
       done++;
-      if(done % 5 === 0 || done === total){
-        progressSet(done, total, `Sync… (${done}/${total})`);
-      }
     }catch(e){
       console.warn("queue sync failed", it, e);
-      progressDone("Sync berhenti (ada error).");
-      break; // stop on first error
+
+      failed++;
+
+      // simpan ke failed store, lalu hapus dari queue
+      const fid = "F" + Date.now() + "_" + Math.random().toString(16).slice(2);
+      await db.put("failed", {
+        fid,
+        qid: it.qid,
+        type: it.type,
+        created_at: it.created_at || new Date().toISOString(),
+        failed_at: new Date().toISOString(),
+        error: (e && e.message) ? String(e.message) : String(e),
+        payload_json: JSON.stringify(it.payload || {})
+      });
+
+      await db.delete("queue", it.qid);
+
+      // tetap lanjut item berikutnya
+      done++;
+    }
+
+    if(done % 5 === 0 || done === total){
+      progressSet(done, total, `Sync… (${done}/${total}) | Gagal: ${failed}`);
     }
   }
 
   await refreshQueueBadge();
   $("#syncState").textContent = "Online";
-  progressDone("Sync selesai.");
-  toast("Sync selesai.");
+  progressDone(failed ? `Sync selesai (Gagal: ${failed}).` : "Sync selesai.");
+  toast(failed ? `Sync selesai. Gagal: ${failed}` : "Sync selesai.");
 }
-
 
 // ---------- UI Routing ----------
 function setWhoAmI(){
@@ -1697,23 +1843,36 @@ async function renderDashboard(){
     </div>
 
     <div class="row g-3">
-      <div class="col-12 col-md-6">
-        <div class="card border-0 shadow-soft kpi-card">
+      <div class="col-12 col-md-4">
+        <div class="card border-0 shadow-soft kpi-card kpi-click" id="cardKpiNilai" role="button" tabindex="0">
           <div class="card-body">
             <div class="text-muted small">Jumlah Data Nilai (filtered)</div>
             <div class="big">${filtered.length}</div>
             <div class="text-muted small">Jumlah Peserta</div>
             <div class="fw-semibold">${pesertaArr.length}</div>
+            <div class="small text-muted mt-2"><i class="bi bi-table"></i> Klik untuk lihat tabel</div>
           </div>
         </div>
       </div>
 
-      <div class="col-12 col-md-6">
-        <div class="card border-0 shadow-soft kpi-card">
+      <div class="col-12 col-md-4">
+        <div class="card border-0 shadow-soft kpi-card kpi-click" id="cardKpiQueue" role="button" tabindex="0">
           <div class="card-body">
             <div class="text-muted small">Antrian Belum Terkirim</div>
             <div class="big" id="kQueue">0</div>
-            <div class="text-muted small">Klik tombol Sync saat online.</div>
+            <div class="text-muted small">Klik untuk lihat detail antrian.</div>
+            <div class="small text-muted mt-2"><i class="bi bi-cloud-arrow-up"></i> Sync saat online</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-md-4">
+        <div class="card border-0 shadow-soft kpi-card kpi-click" id="cardKpiFailed" role="button" tabindex="0">
+          <div class="card-body">
+            <div class="text-muted small">Gagal Sync</div>
+            <div class="big" id="kFailed">0</div>
+            <div class="text-muted small">Klik untuk lihat log gagal sync.</div>
+            <div class="small text-muted mt-2"><i class="bi bi-exclamation-triangle"></i> Periksa error & coba ulang input</div>
           </div>
         </div>
       </div>
@@ -1795,6 +1954,126 @@ ${
 
   const q = await dbAll("queue");
   $("#kQueue").textContent = String(q.length);
+
+    // ==== KPI counts (queue + failed) ====
+  const failedRows = await dbAll("failed");
+  const q2 = await dbAll("queue");
+  $("#kQueue").textContent = String(q2.length);
+  $("#kFailed").textContent = String(failedRows.length);
+
+  // ==== CLICK HANDLERS (open modal tables) ====
+  const bindClick = (el, fn)=>{
+    if(!el) return;
+    el.addEventListener("click", fn);
+    el.addEventListener("keydown",(e)=>{
+      if(e.key === "Enter" || e.key === " "){
+        e.preventDefault();
+        fn();
+      }
+    });
+  };
+
+  // 1) filtered nilai -> modal
+  bindClick(document.getElementById("cardKpiNilai"), ()=>{
+    const cols = [
+      { key:"tanggal", label:"Tanggal" },
+      { key:"tahun", label:"Tahun" },
+      { key:"jenis_pelatihan", label:"Jenis Pelatihan" },
+      { key:"nik", label:"NIK" },
+      { key:"nama", label:"Nama" },
+      { key:"test_type", label:"Test" },
+      { key:"materi_kode", label:"Materi Kode" },
+      { key:"materi_nama", label:"Materi Nama" },
+      { key:"nilai", label:"Nilai" }
+    ];
+
+    const rowsForModal = filtered.map(r=>({
+      tanggal: fmtTanggalDisplay(r.tanggal),
+      tahun: r.tahun,
+      jenis_pelatihan: r.jenis_pelatihan,
+      nik: r.nik,
+      nama: r.nama,
+      test_type: r.test_type,
+      materi_kode: r.materi_kode,
+      materi_nama: r.materi_nama,
+      nilai: r.nilai
+    }));
+
+    const meta = `Filtered: Tahun=${state.filters.tahun || "Semua"}, Jenis=${state.filters.jenis || "Semua"}, Test=${state.filters.test || "Semua"}, Materi=${state.filters.materi || "Semua"}`
+      + (state.user.role==="admin" ? `, NIK=${state.filters.nik || "Semua"}` : "");
+
+    const fn = `nilai_filtered_${state.filters.tahun || "all"}_${Date.now()}.xlsx`;
+
+    showDataTableModal({
+      title: "Data Nilai (Filtered)",
+      meta,
+      filename: fn,
+      columns: cols,
+      rows: rowsForModal
+    });
+  });
+
+  // 2) queue -> modal
+  bindClick(document.getElementById("cardKpiQueue"), async ()=>{
+    const qRows = await dbAll("queue");
+    const cols = [
+      { key:"qid", label:"QID" },
+      { key:"type", label:"Type" },
+      { key:"created_at", label:"Created At" },
+      { key:"payload_json", label:"Payload" }
+    ];
+
+    const rowsForModal = qRows
+      .sort((a,b)=> String(b.created_at||"").localeCompare(String(a.created_at||"")))
+      .map(x=>({
+        qid: x.qid,
+        type: x.type,
+        created_at: x.created_at,
+        payload_json: JSON.stringify(x.payload || {})
+      }));
+
+    showDataTableModal({
+      title: "Antrian Belum Terkirim (Queue)",
+      meta: `Total queue: ${qRows.length}`,
+      filename: `queue_${Date.now()}.xlsx`,
+      columns: cols,
+      rows: rowsForModal
+    });
+  });
+
+  // 3) failed -> modal
+  bindClick(document.getElementById("cardKpiFailed"), async ()=>{
+    const fRows = await dbAll("failed");
+    const cols = [
+      { key:"fid", label:"FID" },
+      { key:"qid", label:"QID Asal" },
+      { key:"type", label:"Type" },
+      { key:"created_at", label:"Created At" },
+      { key:"failed_at", label:"Failed At" },
+      { key:"error", label:"Error" },
+      { key:"payload_json", label:"Payload" }
+    ];
+
+    const rowsForModal = fRows
+      .sort((a,b)=> String(b.failed_at||"").localeCompare(String(a.failed_at||"")))
+      .map(x=>({
+        fid: x.fid,
+        qid: x.qid,
+        type: x.type,
+        created_at: x.created_at,
+        failed_at: x.failed_at,
+        error: x.error,
+        payload_json: x.payload_json
+      }));
+
+    showDataTableModal({
+      title: "Gagal Sync (Log)",
+      meta: `Total gagal: ${fRows.length}`,
+      filename: `gagal_sync_${Date.now()}.xlsx`,
+      columns: cols,
+      rows: rowsForModal
+    });
+  });
 }
 
 // ---------- Nilai list ----------
@@ -2871,7 +3150,20 @@ async function renderSettingAdmin(){
         <div class="card border-0 shadow-soft">
           <div class="card-body">
             <div class="fw-semibold mb-2">Hapus Data Lokal</div>
-            <button class="btn btn-outline-danger btn-sm" id="btnWipe"><i class="bi bi-trash"></i> Hapus IndexedDB</button>
+              <div class="d-flex flex-wrap gap-2">
+                <button class="btn btn-outline-danger btn-sm" id="btnWipe">
+                  <i class="bi bi-trash"></i> Hapus IndexedDB
+                </button>
+
+                <!-- ✅ BARU: clear log failed sync -->
+                <button class="btn btn-outline-secondary btn-sm" id="btnClearFailed" title="Hapus log gagal sync">
+                  <i class="bi bi-x-circle"></i> Clear Failed
+                </button>
+              </div>
+
+              <div class="small text-muted mt-2">
+                *Clear Failed hanya menghapus log store <code>failed</code> (tidak menghapus data nilai/master).
+              </div>
           </div>
         </div>
       </div>
@@ -2961,8 +3253,6 @@ async function renderSettingAdmin(){
     });
 
   }
-
-
   const _el_btnWipe = $("#btnWipe");
   if(_el_btnWipe) _el_btnWipe.addEventListener("click", async ()=>{
     if(!confirm("Yakin hapus semua data lokal?")) return;
@@ -2971,6 +3261,20 @@ async function renderSettingAdmin(){
     await db.clear("nilai");
     await db.clear("queue");
     toast("Data lokal dihapus. Silakan tarik master & nilai dari Google Sheet.");
+  });
+    // ✅ BARU: Clear store "failed"
+  const _el_btnClearFailed = $("#btnClearFailed");
+  if(_el_btnClearFailed) _el_btnClearFailed.addEventListener("click", async ()=>{
+    runBusy(_el_btnClearFailed, async ()=>{
+      if(!confirm("Yakin hapus semua log Gagal Sync (failed)?")) return;
+
+      await dbClear("failed"); // ✅ sesuai permintaan: dbClear("failed")
+      toast("Log Gagal Sync (failed) sudah dikosongkan.");
+
+      // optional: kalau sedang ada elemen KPI failed di layar (mis. dashboard), update cepat bila ada
+      const kf = document.getElementById("kFailed");
+      if(kf) kf.textContent = "0";
+    }, { busyText:"Menghapus…" }).catch(e=>toast(e.message));
   });
 }
 

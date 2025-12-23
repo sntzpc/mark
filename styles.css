@@ -29,3 +29,7 @@ body{ background: var(--bg); }
 .table-responsive .table td{
   white-space: nowrap;
 }
+
+.kpi-click{ cursor:pointer; }
+.kpi-click:hover{ transform: translateY(-1px); transition: .15s ease; }
+.kpi-click:active{ transform: translateY(0px); }
